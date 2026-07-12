@@ -133,8 +133,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
                 type: data.type as any,
             });
 
-            // Emit to all users in the conversation
-            this.server.to(`conversation:${data.conversationId}`).emit('new_message', message);
+            // Emit to the room + directly to participants outside it
+            await this.notifyNewMessage(message, userId);
 
             return { success: true, message };
         } catch (error) {
@@ -258,6 +258,36 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // Emit an event to everyone viewing the conversation (room members)
     emitToConversation(conversationId: string, event: string, data: any) {
         this.server.to(`conversation:${conversationId}`).emit(event, data);
+    }
+
+    /**
+     * Broadcast a new message to the conversation room AND directly to every
+     * online participant who is NOT in the room (e.g. sitting on the chat-list
+     * screen). Without the direct emit those users would never receive
+     * `new_message` — no live chat-list update and no `message_delivered`
+     * receipt until they open the chat. Room members are skipped so nobody
+     * gets the event twice; the sender gets the message via the ack/room.
+     */
+    async notifyNewMessage(message: any, senderId: string) {
+        const room = `conversation:${message.conversationId}`;
+        this.server.to(room).emit('new_message', message);
+
+        try {
+            const participantIds = await this.conversationsService.getParticipantUserIds(
+                message.conversationId,
+            );
+            for (const participantId of participantIds) {
+                if (participantId === senderId) continue;
+                const socketId = this.userSockets.get(participantId);
+                if (!socketId) continue;
+                const socket = this.server.sockets.sockets.get(socketId);
+                if (socket && !socket.rooms.has(room)) {
+                    socket.emit('new_message', message);
+                }
+            }
+        } catch (error) {
+            console.error('notifyNewMessage fan-out failed:', error.message);
+        }
     }
 
     /**
