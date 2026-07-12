@@ -48,6 +48,15 @@ export class ConversationsService {
         return this.findOne(conversation.id, userId);
     }
 
+    /** Lightweight participant lookup (no relations) — used for socket fan-out */
+    async getParticipantUserIds(conversationId: string): Promise<string[]> {
+        const participants = await this.participantRepository.find({
+            where: { conversationId },
+            select: ['userId'],
+        });
+        return participants.map((p) => p.userId);
+    }
+
     async findAll(userId: string, page: number = 1, limit: number = 20): Promise<{ conversations: Conversation[]; total: number }> {
         const skip = (page - 1) * limit;
 

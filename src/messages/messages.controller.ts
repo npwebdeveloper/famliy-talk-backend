@@ -19,8 +19,8 @@ export class MessagesController {
         const message = await this.messagesService.create(user.userId, createMessageDto);
 
         // REST-sent messages must reach online recipients in real-time too,
-        // same as socket-sent ones
-        this.chatGateway.emitToConversation(message.conversationId, 'new_message', message);
+        // same as socket-sent ones (room + direct to participants outside it)
+        await this.chatGateway.notifyNewMessage(message, user.userId);
 
         return message;
     }
