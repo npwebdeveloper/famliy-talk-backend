@@ -1,17 +1,28 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, ParseIntPipe, Inject, forwardRef } from '@nestjs/common';
 import { MessagesService } from './messages.service';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { ChatGateway } from '../websocket/chat.gateway';
 
 @Controller('messages')
 @UseGuards(JwtAuthGuard)
 export class MessagesController {
-    constructor(private readonly messagesService: MessagesService) { }
+    constructor(
+        private readonly messagesService: MessagesService,
+        @Inject(forwardRef(() => ChatGateway))
+        private readonly chatGateway: ChatGateway,
+    ) { }
 
     @Post()
     async create(@CurrentUser() user: any, @Body() createMessageDto: CreateMessageDto) {
-        return this.messagesService.create(user.userId, createMessageDto);
+        const message = await this.messagesService.create(user.userId, createMessageDto);
+
+        // REST-sent messages must reach online recipients in real-time too,
+        // same as socket-sent ones
+        this.chatGateway.emitToConversation(message.conversationId, 'new_message', message);
+
+        return message;
     }
 
     @Get('conversation/:conversationId')
@@ -26,7 +37,18 @@ export class MessagesController {
 
     @Post(':id/read')
     async markAsRead(@CurrentUser() user: any, @Param('id') id: string) {
-        await this.messagesService.markAsRead(id, user.userId);
+        const result = await this.messagesService.markAsRead(id, user.userId);
+
+        // Same real-time receipt as the socket path — sender's tick turns blue
+        // no matter which transport the reader used
+        if (result) {
+            this.chatGateway.notifyStatusChange('message_read', {
+                messageId: id,
+                conversationId: result.conversationId,
+                userId: user.userId,
+            }, result.senderId);
+        }
+
         return { success: true };
     }
 

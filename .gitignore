@@ -5,3 +5,7 @@ uploads/*
 !uploads/.gitkeep
 *.log
 .DS_Store
+
+# Firebase credentials — never commit
+firebase-service-account.json
+*-firebase-adminsdk-*.json

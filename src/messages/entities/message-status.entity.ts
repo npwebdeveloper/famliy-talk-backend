@@ -30,6 +30,12 @@ export class MessageStatus {
     @CreateDateColumn({ type: 'timestamp' })
     timestamp: Date;
 
+    @Column({ nullable: true, type: 'timestamp', name: 'delivered_at' })
+    deliveredAt: Date | null;
+
+    @Column({ nullable: true, type: 'timestamp', name: 'read_at' })
+    readAt: Date | null;
+
     @ManyToOne(() => Message, message => message.statuses)
     @JoinColumn({ name: 'message_id' })
     message: Message;

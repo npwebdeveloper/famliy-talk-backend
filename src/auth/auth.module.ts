@@ -7,11 +7,14 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { User } from '../users/entities/user.entity';
+import { UserContact } from '../users/entities/user-contact.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([User, OtpVerification]),
+        TypeOrmModule.forFeature([User, OtpVerification, UserContact]),
+        NotificationsModule,
         PassportModule.register({ defaultStrategy: 'jwt' }),
         JwtModule.registerAsync({
             imports: [ConfigModule],
