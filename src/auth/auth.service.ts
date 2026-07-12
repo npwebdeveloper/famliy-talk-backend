@@ -4,9 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { User } from '../users/entities/user.entity';
+import { UserContact } from '../users/entities/user-contact.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AuthService {
@@ -15,8 +17,11 @@ export class AuthService {
         private userRepository: Repository<User>,
         @InjectRepository(OtpVerification)
         private otpRepository: Repository<OtpVerification>,
+        @InjectRepository(UserContact)
+        private userContactRepository: Repository<UserContact>,
         private jwtService: JwtService,
         private configService: ConfigService,
+        private notificationsService: NotificationsService,
     ) { }
 
     async sendOtp(sendOtpDto: SendOtpDto) {
@@ -83,6 +88,7 @@ export class AuthService {
 
         // Find or create user
         let user = await this.userRepository.findOne({ where: { phoneNumber } });
+        const isNewUser = !user;
 
         if (!user) {
             user = this.userRepository.create({
@@ -95,6 +101,30 @@ export class AuthService {
             // Update online status
             user.isOnline = true;
             await this.userRepository.save(user);
+        }
+
+        // If this is a new registration, mark any saved contacts as registered
+        if (isNewUser) {
+            // Grab the rows first — we need the owners (and their saved name for this
+            // contact) to send them a "your contact joined" push after the update
+            const matchingContacts = await this.userContactRepository.find({
+                where: { phoneNumber, isRegistered: false },
+                select: ['ownerId', 'contactName'],
+            });
+
+            await this.userContactRepository
+                .createQueryBuilder()
+                .update(UserContact)
+                .set({ isRegistered: true, registeredUserId: user.id })
+                .where('phone_number = :phoneNumber AND is_registered = false', { phoneNumber })
+                .execute();
+
+            // Notify everyone who had this number saved (fire-and-forget)
+            for (const contact of matchingContacts) {
+                this.notificationsService
+                    .sendContactJoinedPush(contact.ownerId, contact.contactName || phoneNumber, user.id)
+                    .catch(err => console.error('Contact-joined push failed:', err.message));
+            }
         }
 
         // Generate JWT tokens
@@ -138,6 +168,7 @@ export class AuthService {
         if (user) {
             user.isOnline = false;
             user.lastSeen = new Date();
+            user.fcmToken = null; // stop push notifications after logout
             await this.userRepository.save(user);
         }
 

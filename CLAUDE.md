@@ -66,15 +66,26 @@ src/
 ## WebSocket (ChatGateway)
 - Token passed via `socket.handshake.auth.token`
 - Tracks `userId → socketId` in-memory map
-- On connect: updates `isOnline=true`, emits `user_online` to all
+- On connect: updates `isOnline=true`, emits `user_online` to all, **and runs a delivery sweep** — all pending `SENT` statuses for that user flip to `DELIVERED`, senders notified live
 - On disconnect: updates `isOnline=false`, `lastSeen`, emits `user_offline`
 - CORS: `origin: '*'` (restrict in production)
 
+## Message Status (ticks) — see MESSAGE_STATUS_FRONTEND.md for full contract
+- `message_status` row per recipient: `sent → delivered → read` (never downgrades; read backfills `deliveredAt`)
+- Separate `delivered_at` / `read_at` timestamp columns
+- Status change methods return `{ senderId, conversationId }` so gateway can notify
+- `notifyStatusChange()`: emits to conversation room + directly to sender's socket (deduped — skipped if sender already in room), so ticks update even on the chat-list screen
+- REST parity: `POST /messages` also emits `new_message` to the room; `POST /messages/:id/read` also emits `message_read` (gateway injected into MessagesController via `forwardRef`)
+- Client-emitted events: `message_delivered` (msg received, chat closed), `mark_conversation_read` (chat opened — bulk read), `mark_read` (single)
+
 ## Database Entities
-- **User**: id (UUID), phoneNumber, name, bio, avatarUrl, isOnline, lastSeen
-- **OtpVerification**: phoneNumber, otpCode, expiresAt (5min), isVerified
-- **Conversation**: participants (many-to-many with User), messages
-- **Message**: content, senderId, conversationId, isRead, type
+- **users**: id (UUID), phone_number, name, bio, avatar_url, is_online, last_seen
+- **otp_verifications**: phone_number, otp_code, expires_at (5min), is_verified
+- **conversations**: id, type (private/group), name, avatar_url
+- **conversation_participants**: conversation_id, user_id, joined_at, last_read_at
+- **messages**: id, conversation_id, sender_id, text, type, media_url
+- **message_status**: message_id, user_id, status (sent/delivered/read)
+- **user_contacts**: id, owner_id (FK→users), phone_number, contact_name, is_registered, registered_user_id (FK→users nullable)
 
 ## Environment Variables (`.env`)
 ```
@@ -89,6 +100,7 @@ JWT_REFRESH_SECRET=your-refresh-secret
 JWT_REFRESH_EXPIRES_IN=7d
 STATIC_OTP=123456
 PORT=4000
+FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
 ## OTP Behavior (Dev)
@@ -107,15 +119,46 @@ npm run build        # Compile to dist/
 npm run start:prod   # Run compiled dist/main
 ```
 
+## Contacts Sync
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/users/sync-contacts` | JWT | Bulk upsert contacts, returns registered users |
+
+- `SyncContactsDto`: `{ contacts: [{ phoneNumber, contactName }] }`
+- Response: `{ registeredContacts: [{ id, name, phoneNumber, avatarUrl, isOnline, lastSeen }] }`
+- On new user registration (`verifyOtp`): auto-marks `user_contacts` rows with matching phone as `is_registered=true`
+
+## Push Notifications (FCM)
+
+Module: `src/notifications/` — `NotificationsService` wraps `firebase-admin`.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/users/fcm-token` | JWT | Save device FCM token (`{ fcmToken }`) |
+
+- Config: `FIREBASE_SERVICE_ACCOUNT_PATH` in `.env` → service account JSON from Firebase Console. **Unset = notifications gracefully disabled** (backend runs fine, logs a warning).
+- `users.fcm_token` column stores one token per user (last device wins).
+- Triggers:
+  - **New message** (`MessagesService.create`): push to recipients who are **offline** (`is_online=false`) — online users get it via socket. Fire-and-forget, never blocks the send. **Privacy**: push contains only sender name + "New message 💬" — message content never goes through FCM/Google; app fetches it on open.
+  - **Contact joined** (`AuthService.verifyOtp`, new user only): push "X joined Family Talk" to every user who had that phone number in `user_contacts`, using their saved contact name.
+- Stale tokens (`registration-token-not-registered` etc.) are auto-cleared from DB.
+- Logout clears `fcm_token` so logged-out devices stop receiving pushes.
+- Credential JSON is gitignored (`firebase-service-account.json`).
+
 ## What's Complete
 - Phone OTP auth with JWT access + refresh tokens
 - User profile management + avatar upload
-- Conversations CRUD
+- Conversations CRUD (private + group, returns existing private conversation if already exists)
 - Messages CRUD with pagination
 - Socket.IO gateway with online/offline status tracking
 - Global JWT guard via Passport
 - `@CurrentUser()` decorator for extracting user from JWT
 - TypeORM auto-sync (dev only)
+- `user_contacts` table + `POST /users/sync-contacts` endpoint
+- Auto-mark contacts as registered when new user signs up
+- FCM push notifications (new message to offline users + contact joined) — needs Firebase service account JSON to activate
 
 ## What Needs Work / Next Steps
-- Update this section as features are added
+- Group chat endpoints
+- Message search

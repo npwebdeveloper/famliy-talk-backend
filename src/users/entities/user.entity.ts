@@ -25,6 +25,9 @@ export class User {
     @Column({ nullable: true, type: 'timestamp', name: 'last_seen' })
     lastSeen: Date;
 
+    @Column({ nullable: true, type: 'varchar', length: 512, name: 'fcm_token' })
+    fcmToken: string | null;
+
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
 

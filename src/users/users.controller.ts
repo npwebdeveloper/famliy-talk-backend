@@ -4,6 +4,8 @@ import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { SyncContactsDto } from './dto/sync-contacts.dto';
+import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -80,5 +82,22 @@ export class UsersController {
     ) {
         await this.usersService.updateOnlineStatus(user.userId, isOnline);
         return { success: true };
+    }
+
+    @Post('fcm-token')
+    async updateFcmToken(
+        @CurrentUser() user: any,
+        @Body() updateFcmTokenDto: UpdateFcmTokenDto,
+    ) {
+        await this.usersService.updateFcmToken(user.userId, updateFcmTokenDto.fcmToken);
+        return { success: true };
+    }
+
+    @Post('sync-contacts')
+    async syncContacts(
+        @CurrentUser() user: any,
+        @Body() syncContactsDto: SyncContactsDto,
+    ) {
+        return this.usersService.syncContacts(user.userId, syncContactsDto.contacts);
     }
 }
