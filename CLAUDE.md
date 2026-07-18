@@ -5,7 +5,7 @@ NestJS REST API + WebSocket gateway for the Family Talk chat app. Phone OTP auth
 
 ## Tech Stack
 - **Framework**: NestJS 11 (TypeScript)
-- **Database**: MySQL via TypeORM (`synchronize: true` — auto-migrates in dev)
+- **Database**: MySQL via TypeORM (`synchronize: false` — schema managed by migrations, see Migrations section)
 - **Auth**: JWT (access + refresh tokens) + Passport
 - **Real-time**: Socket.IO via `@nestjs/websockets`
 - **File uploads**: Multer (avatars stored in `./uploads/avatars/`)
@@ -118,6 +118,31 @@ npm run start:dev    # Watch mode (development)
 npm run build        # Compile to dist/
 npm run start:prod   # Run compiled dist/main
 ```
+Requires **Node 20+** (`.nvmrc` pins 22 — run `nvm use`).
+
+## Database Migrations (TypeORM)
+
+`synchronize` is **permanently off** — it silently drops renamed/removed columns. Every schema change goes through a migration file in `src/migrations/`. CLI config: [src/data-source.ts](src/data-source.ts) (reads `.env`).
+
+**Local workflow (after changing any entity):**
+```bash
+npm run migration:generate -- src/migrations/DescriptiveName  # diff entities vs DB → new file
+npm run migration:run                                          # apply pending migrations
+npm run migration:show                                         # [X] applied / [ ] pending
+npm run migration:revert                                       # undo last migration
+```
+
+**Production (SSH into server):**
+```bash
+git pull && npm ci && npm run build
+npm run migration:run:prod    # runs compiled dist/migrations against prod DB
+# then restart the app (pm2 restart family-talk)
+```
+
+Rules:
+- Always review the generated SQL before running — especially DROP statements
+- Baseline = 7 per-table migrations (`CreateUsersTable` … `CreateUserContactsTable`), one file per table, FK-dependency ordered: users → otp_verifications → conversations → conversation_participants → messages → message_status → user_contacts
+- If a DB already has the tables (created before migrations existed): `npm run migration:run -- --fake` once to mark as applied without executing
 
 ## Contacts Sync
 
@@ -154,7 +179,7 @@ Module: `src/notifications/` — `NotificationsService` wraps `firebase-admin`.
 - Socket.IO gateway with online/offline status tracking
 - Global JWT guard via Passport
 - `@CurrentUser()` decorator for extracting user from JWT
-- TypeORM auto-sync (dev only)
+- TypeORM migrations (synchronize permanently off)
 - `user_contacts` table + `POST /users/sync-contacts` endpoint
 - Auto-mark contacts as registered when new user signs up
 - FCM push notifications (new message to offline users + contact joined) — needs Firebase service account JSON to activate

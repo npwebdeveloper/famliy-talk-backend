@@ -29,7 +29,9 @@ import { WebsocketModule } from './websocket/websocket.module';
         password: configService.get('DB_PASSWORD'),
         database: configService.get('DB_DATABASE'),
         entities: [__dirname + '/**/*.entity{.ts,.js}'],
-        synchronize: true, // Set to false in production, use migrations instead
+        // Schema changes are managed via migrations (npm run migration:run).
+        // NEVER turn synchronize on — it silently drops renamed/removed columns.
+        synchronize: false,
         logging: true,
       }),
       inject: [ConfigService],
