@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
+import { setupSwagger, SWAGGER_PATH } from './config/swagger.config';
 import * as fs from 'fs';
 
 async function bootstrap() {
@@ -36,12 +37,18 @@ async function bootstrap() {
     }
   });
 
+  // Swagger docs (dev only — see src/config/swagger.config.ts)
+  const swaggerEnabled = setupSwagger(app);
+
   // Get port from config
   const port = configService.get('PORT') || 3000;
 
   await app.listen(port);
   console.log(`🚀 Application is running on: http://localhost:${port}`);
   console.log(`📡 WebSocket server is running on: ws://localhost:${port}`);
+  if (swaggerEnabled) {
+    console.log(`📚 Swagger docs available at: http://localhost:${port}/${SWAGGER_PATH}`);
+  }
 }
 
 bootstrap();

@@ -27,6 +27,12 @@ src/
   common/decorators/      # @CurrentUser() decorator
 ```
 
+## API Docs (Swagger)
+- Interactive docs at **`/api/docs`** (setup: [src/config/swagger.config.ts](src/config/swagger.config.ts), called from `main.ts`)
+- Enabled by default in dev; **disabled when `NODE_ENV=production`** unless `SWAGGER_ENABLED=true`
+- Bearer auth wired: click "Authorize", paste accessToken from `/auth/verify-otp` — persists across reloads
+- All DTOs carry `@ApiProperty` examples; controllers use `@ApiTags`/`@ApiOperation`/`@ApiResponse`
+
 ## API Endpoints
 
 ### Auth (`/auth`)
