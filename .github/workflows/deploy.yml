@@ -13,11 +13,12 @@ jobs:
         uses: appleboy/ssh-action@v1
         env:
           ENV_FILE: ${{ secrets.ENV_FILE }}
+          FIREBASE_SERVICE_ACCOUNT_B64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_B64 }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: ENV_FILE
+          envs: ENV_FILE,FIREBASE_SERVICE_ACCOUNT_B64
           command_timeout: 15m
           script: |
             set -e
@@ -28,6 +29,14 @@ jobs:
 
             echo "==> Writing .env from GitHub Secrets"
             printf '%s\n' "$ENV_FILE" > .env
+
+            # Firebase service account (push notifications) — skipped if secret
+            # not set, so the existing file on the server is never clobbered
+            if [ -n "$FIREBASE_SERVICE_ACCOUNT_B64" ]; then
+              echo "==> Writing firebase-service-account.json from GitHub Secrets"
+              printf '%s' "$FIREBASE_SERVICE_ACCOUNT_B64" | base64 -d > firebase-service-account.json
+              chmod 600 firebase-service-account.json
+            fi
 
             echo "==> Installing dependencies"
             npm ci
