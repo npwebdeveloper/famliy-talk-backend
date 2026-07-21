@@ -9,6 +9,7 @@ import { OtpVerification } from './entities/otp-verification.entity';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { normalizePhoneNumber } from '../common/utils/phone.util';
 
 @Injectable()
 export class AuthService {
@@ -56,9 +57,19 @@ export class AuthService {
         // In production, send SMS here via Twilio/AWS SNS
         console.log(`OTP for ${phoneNumber}: ${otpCode}`);
 
+        // Lets the client show a "you're already registered with this
+        // number, continue?" prompt (e.g. after a reinstall) before moving
+        // to the OTP screen — no profile data is returned, just the flag,
+        // to avoid leaking who's registered to an unauthenticated caller.
+        const existingUser = await this.userRepository.findOne({
+            where: { phoneNumber },
+            select: ['id'],
+        });
+
         return {
             success: true,
             message: 'OTP sent successfully',
+            isExistingUser: !!existingUser,
         };
     }
 
@@ -105,10 +116,14 @@ export class AuthService {
 
         // If this is a new registration, mark any saved contacts as registered
         if (isNewUser) {
+            // user_contacts.phone_number is canonicalized at sync time
+            // (see UsersService.syncContacts) — match on that same form here.
+            const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+
             // Grab the rows first — we need the owners (and their saved name for this
             // contact) to send them a "your contact joined" push after the update
             const matchingContacts = await this.userContactRepository.find({
-                where: { phoneNumber, isRegistered: false },
+                where: { phoneNumber: normalizedPhoneNumber, isRegistered: false },
                 select: ['ownerId', 'contactName'],
             });
 
@@ -116,7 +131,7 @@ export class AuthService {
                 .createQueryBuilder()
                 .update(UserContact)
                 .set({ isRegistered: true, registeredUserId: user.id })
-                .where('phone_number = :phoneNumber AND is_registered = false', { phoneNumber })
+                .where('phone_number = :normalizedPhoneNumber AND is_registered = false', { normalizedPhoneNumber })
                 .execute();
 
             // Notify everyone who had this number saved (fire-and-forget)
