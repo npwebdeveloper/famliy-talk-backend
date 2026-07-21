@@ -29,7 +29,10 @@ export class ConversationsController {
     @ApiOperation({ summary: "List current user's conversations (paginated)" })
     @ApiQuery({ name: 'page', required: false, example: 1 })
     @ApiQuery({ name: 'limit', required: false, example: 20 })
-    @ApiResponse({ status: 200, description: '{ conversations, total } with participants and messages' })
+    @ApiResponse({
+        status: 200,
+        description: '{ conversations, total } — ordered by most recent activity; each conversation includes participants, lastMessage (single message, or null), and unreadCount',
+    })
     async findAll(
         @CurrentUser() user: any,
         @Query('page', ParseIntPipe) page: number = 1,
