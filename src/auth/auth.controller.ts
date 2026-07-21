@@ -15,9 +15,9 @@ export class AuthController {
     @Post('send-otp')
     @ApiOperation({
         summary: 'Send OTP to a phone number',
-        description: 'Rate limited: max 3 OTPs per phone per hour. OTP expires in 5 minutes. Dev OTP is static (123456).',
+        description: 'Rate limited: max 3 OTPs per phone per hour. OTP expires in 5 minutes. Dev OTP is static (123456). Response includes isExistingUser so the client can show a "continue with this number?" prompt before the OTP screen.',
     })
-    @ApiResponse({ status: 201, description: 'OTP sent successfully' })
+    @ApiResponse({ status: 201, description: 'OTP sent successfully, with isExistingUser flag' })
     @ApiResponse({ status: 400, description: 'Invalid phone number or rate limit exceeded' })
     async sendOtp(@Body() sendOtpDto: SendOtpDto) {
         return this.authService.sendOtp(sendOtpDto);

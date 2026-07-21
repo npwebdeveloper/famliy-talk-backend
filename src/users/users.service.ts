@@ -5,6 +5,7 @@ import { User } from './entities/user.entity';
 import { UserContact } from './entities/user-contact.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ContactItemDto } from './dto/sync-contacts.dto';
+import { normalizePhoneNumber } from '../common/utils/phone.util';
 
 @Injectable()
 export class UsersService {
@@ -79,22 +80,33 @@ export class UsersService {
             return { registeredContacts: [] };
         }
 
-        const phoneNumbers = contacts.map((c) => c.phoneNumber);
+        // Canonicalize every incoming number up front — a device contact saved
+        // as "9876543210" and one saved as "+919876543210" must match the same
+        // registered user. `users.phoneNumber` is always stored canonical
+        // (every client path prepends +91 before OTP), so normalizing only the
+        // incoming side here is enough to match correctly either way.
+        const normalizedContacts = contacts.map((c) => ({
+            ...c,
+            normalizedPhoneNumber: normalizePhoneNumber(c.phoneNumber),
+        }));
+
+        const normalizedNumbers = normalizedContacts.map((c) => c.normalizedPhoneNumber);
 
         // Find which numbers are registered
         const registeredUsers = await this.userRepository.find({
-            where: { phoneNumber: In(phoneNumbers) },
+            where: { phoneNumber: In(normalizedNumbers) },
             select: ['id', 'phoneNumber', 'name', 'avatarUrl', 'isOnline', 'lastSeen'],
         });
 
         const registeredMap = new Map(registeredUsers.map((u) => [u.phoneNumber, u]));
 
-        // Upsert each contact
-        for (const contact of contacts) {
-            const registeredUser = registeredMap.get(contact.phoneNumber);
+        // Upsert each contact — stored phone_number is now always the
+        // canonical form too, so this table self-heals as users re-sync
+        for (const contact of normalizedContacts) {
+            const registeredUser = registeredMap.get(contact.normalizedPhoneNumber);
 
             const existing = await this.userContactRepository.findOne({
-                where: { ownerId, phoneNumber: contact.phoneNumber },
+                where: { ownerId, phoneNumber: contact.normalizedPhoneNumber },
             });
 
             if (existing) {
@@ -105,7 +117,7 @@ export class UsersService {
             } else {
                 const newContact = this.userContactRepository.create({
                     ownerId,
-                    phoneNumber: contact.phoneNumber,
+                    phoneNumber: contact.normalizedPhoneNumber,
                     contactName: contact.contactName,
                     isRegistered: !!registeredUser,
                     registeredUserId: registeredUser?.id ?? undefined,
@@ -115,10 +127,10 @@ export class UsersService {
         }
 
         // Return registered contacts with phone-book name preferred
-        const registeredContacts = contacts
-            .filter((c) => registeredMap.has(c.phoneNumber))
+        const registeredContacts = normalizedContacts
+            .filter((c) => registeredMap.has(c.normalizedPhoneNumber))
             .map((c) => {
-                const user = registeredMap.get(c.phoneNumber)!;
+                const user = registeredMap.get(c.normalizedPhoneNumber)!;
                 return {
                     id: user.id,
                     name: c.contactName || user.name,
@@ -131,18 +143,5 @@ export class UsersService {
             .filter((c) => c.id !== ownerId); // exclude self
 
         return { registeredContacts };
-    }
-
-    /**
-     * Called when a new user registers.
-     * Marks all existing user_contact rows that have this phone number as registered.
-     */
-    async markPhoneAsRegistered(phoneNumber: string, userId: string): Promise<void> {
-        await this.userContactRepository
-            .createQueryBuilder()
-            .update(UserContact)
-            .set({ isRegistered: true, registeredUserId: userId })
-            .where('phone_number = :phoneNumber AND is_registered = false', { phoneNumber })
-            .execute();
     }
 }
