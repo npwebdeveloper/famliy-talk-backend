@@ -65,27 +65,28 @@ export class ConversationsService {
 
     /**
      * List the user's conversations ordered by most recent activity (latest
-     * message time, falling back to conversation creation time for chats with
-     * no messages yet) — not by `conversation.updatedAt`, which is never
+     * message time) — not by `conversation.updatedAt`, which is never
      * touched when a message is inserted into a different table.
+     *
+     * Conversations with zero messages are excluded entirely. Opening a
+     * contact's chat screen creates the conversation row immediately (so a
+     * conversationId exists to send into), but until a message actually
+     * gets sent it isn't a "chat" yet — otherwise every contact whose
+     * profile you've merely opened would clutter the list, sorted as the
+     * most recent activity since its createdAt is "now".
      */
     async findAll(userId: string, page: number = 1, limit: number = 20): Promise<{ conversations: any[]; total: number }> {
         const skip = (page - 1) * limit;
 
         const participantRecords = await this.participantRepository.find({
             where: { userId },
-            relations: ['conversation'],
         });
-        const total = participantRecords.length;
 
-        if (total === 0) {
+        if (participantRecords.length === 0) {
             return { conversations: [], total: 0 };
         }
 
         const allConversationIds = participantRecords.map(p => p.conversationId);
-        const createdAtMap = new Map(
-            participantRecords.map(p => [p.conversationId, p.conversation.createdAt.getTime()]),
-        );
 
         const latestMessageTimes = await this.messageRepository
             .createQueryBuilder('m')
@@ -99,13 +100,16 @@ export class ConversationsService {
             latestMessageTimes.map(row => [row.conversationId, new Date(row.lastMessageAt).getTime()]),
         );
 
-        const sortedIds = allConversationIds
+        const activeIds = allConversationIds.filter(id => lastActivityMap.has(id));
+        const total = activeIds.length;
+
+        if (total === 0) {
+            return { conversations: [], total: 0 };
+        }
+
+        const sortedIds = activeIds
             .slice()
-            .sort((a, b) => {
-                const aTime = lastActivityMap.get(a) ?? createdAtMap.get(a) ?? 0;
-                const bTime = lastActivityMap.get(b) ?? createdAtMap.get(b) ?? 0;
-                return bTime - aTime;
-            });
+            .sort((a, b) => lastActivityMap.get(b)! - lastActivityMap.get(a)!);
 
         const pageIds = sortedIds.slice(skip, skip + limit);
 
