@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { MessagesService } from '../messages/messages.service';
 import { UsersService } from '../users/users.service';
 import { ConversationsService } from '../conversations/conversations.service';
+import { S3Service } from '../s3/s3.service';
 
 @WebSocketGateway({
     cors: {
@@ -32,6 +33,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         private messagesService: MessagesService,
         private usersService: UsersService,
         private conversationsService: ConversationsService,
+        private s3Service: S3Service,
     ) { }
 
     async handleConnection(client: Socket) {
@@ -269,6 +271,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
      * gets the event twice; the sender gets the message via the ack/room.
      */
     async notifyNewMessage(message: any, senderId: string) {
+        // WebSocket emits bypass the HTTP response pipeline (and therefore
+        // AvatarUrlInterceptor) entirely, so the sender's avatar key has to
+        // be presigned here explicitly — this is the only such spot, since
+        // every other user-bearing payload in this gateway (typing, status,
+        // online/offline) carries a bare userId, never a nested User object.
+        if (message.sender?.avatarUrl) {
+            message = {
+                ...message,
+                sender: {
+                    ...message.sender,
+                    avatarUrl: await this.s3Service.getPresignedUrl(message.sender.avatarUrl),
+                },
+            };
+        }
+
         const room = `conversation:${message.conversationId}`;
         this.server.to(room).emit('new_message', message);
 

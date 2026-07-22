@@ -1,8 +1,7 @@
 import { Controller, Get, Put, Post, Body, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { memoryStorage } from 'multer';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SyncContactsDto } from './dto/sync-contacts.dto';
@@ -36,7 +35,10 @@ export class UsersController {
     }
 
     @Post('avatar')
-    @ApiOperation({ summary: 'Upload avatar image (jpg/jpeg/png/gif, max 5MB)' })
+    @ApiOperation({
+        summary: 'Upload avatar image (jpg/jpeg/png/gif, max 5MB)',
+        description: 'Resized to 512x512 and stored in S3 (private bucket). Response contains a presigned URL, valid for a few days — re-fetch user data periodically rather than caching it indefinitely.',
+    })
     @ApiConsumes('multipart/form-data')
     @ApiBody({
         schema: {
@@ -47,20 +49,11 @@ export class UsersController {
             required: ['file'],
         },
     })
-    @ApiResponse({ status: 201, description: '{ avatarUrl } — served under /uploads/avatars/' })
+    @ApiResponse({ status: 201, description: '{ avatarUrl } — presigned S3 URL' })
     @ApiResponse({ status: 400, description: 'No file / not an image / too large' })
     @UseInterceptors(
         FileInterceptor('file', {
-            storage: diskStorage({
-                destination: './uploads/avatars',
-                filename: (req, file, cb) => {
-                    const randomName = Array(32)
-                        .fill(null)
-                        .map(() => Math.round(Math.random() * 16).toString(16))
-                        .join('');
-                    cb(null, `${randomName}${extname(file.originalname)}`);
-                },
-            }),
+            storage: memoryStorage(),
             limits: {
                 fileSize: 5 * 1024 * 1024, // 5MB
             },
@@ -80,12 +73,21 @@ export class UsersController {
             throw new BadRequestException('No file uploaded');
         }
 
-        const avatarUrl = `/uploads/avatars/${file.filename}`;
-        const updatedUser = await this.usersService.updateAvatar(user.userId, avatarUrl);
+        const updatedUser = await this.usersService.updateAvatar(user.userId, file.buffer);
 
         return {
             avatarUrl: updatedUser.avatarUrl,
         };
+    }
+
+    @Get('contacts')
+    @ApiOperation({
+        summary: 'Get previously-synced registered contacts',
+        description: 'Returns contacts from the last sync-contacts call that are registered on Family Talk, read straight from the database — no device phonebook re-read or permission required. Used to restore contact names immediately after a fresh install/login, ahead of the next full on-device resync.',
+    })
+    @ApiResponse({ status: 200, description: 'Array of registered contacts (same shape as sync-contacts registeredContacts)' })
+    async getContacts(@CurrentUser() user: any) {
+        return this.usersService.getRegisteredContacts(user.userId);
     }
 
     @Get('search')
