@@ -1,11 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like, In } from 'typeorm';
+import sharp from 'sharp';
 import { User } from './entities/user.entity';
 import { UserContact } from './entities/user-contact.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ContactItemDto } from './dto/sync-contacts.dto';
 import { normalizePhoneNumber } from '../common/utils/phone.util';
+import { S3Service } from '../s3/s3.service';
+
+const AVATAR_SIZE = 512;
 
 @Injectable()
 export class UsersService {
@@ -15,6 +19,8 @@ export class UsersService {
 
         @InjectRepository(UserContact)
         private userContactRepository: Repository<UserContact>,
+
+        private s3Service: S3Service,
     ) { }
 
     async findOne(id: string): Promise<User> {
@@ -34,10 +40,33 @@ export class UsersService {
         return this.userRepository.save(user);
     }
 
-    async updateAvatar(userId: string, avatarUrl: string): Promise<User> {
+    /**
+     * Resize/compress the uploaded image and store it in S3 under a fresh
+     * unique key (see S3Service.buildAvatarKey) — the old object, if any, is
+     * deleted after the new one is saved so a failed upload never leaves the
+     * user without an avatar. `user.avatarUrl` stores the S3 key, not a URL;
+     * AvatarUrlInterceptor turns it into a presigned URL on the way out.
+     */
+    async updateAvatar(userId: string, buffer: Buffer): Promise<User> {
         const user = await this.findOne(userId);
-        user.avatarUrl = avatarUrl;
-        return this.userRepository.save(user);
+
+        const resized = await sharp(buffer)
+            .resize(AVATAR_SIZE, AVATAR_SIZE, { fit: 'cover' })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+
+        const key = this.s3Service.buildAvatarKey(userId, 'jpg');
+        await this.s3Service.uploadBuffer(key, resized, 'image/jpeg');
+
+        const previousKey = user.avatarUrl;
+        user.avatarUrl = key;
+        await this.userRepository.save(user);
+
+        if (previousKey) {
+            await this.s3Service.deleteObject(previousKey);
+        }
+
+        return user;
     }
 
     async searchUsers(query: string): Promise<User[]> {
@@ -65,6 +94,30 @@ export class UsersService {
 
     async clearFcmToken(userId: string): Promise<void> {
         await this.userRepository.update({ id: userId }, { fcmToken: null });
+    }
+
+    /**
+     * Previously-synced registered contacts, read straight from user_contacts
+     * (no device phonebook re-read needed). Lets a fresh install/login restore
+     * contact names and the "who's on the app" list immediately, without
+     * waiting on contacts permission to be re-granted and a full resync.
+     */
+    async getRegisteredContacts(ownerId: string): Promise<any[]> {
+        const contacts = await this.userContactRepository.find({
+            where: { ownerId, isRegistered: true },
+            relations: ['registeredUser'],
+        });
+
+        return contacts
+            .filter((c) => !!c.registeredUser)
+            .map((c) => ({
+                id: c.registeredUser.id,
+                name: c.contactName || c.registeredUser.name,
+                phoneNumber: c.registeredUser.phoneNumber,
+                avatarUrl: c.registeredUser.avatarUrl,
+                isOnline: c.registeredUser.isOnline,
+                lastSeen: c.registeredUser.lastSeen,
+            }));
     }
 
     /**

@@ -26,12 +26,12 @@ async function bootstrap() {
     }),
   );
 
-  // Create uploads directories if they don't exist
+  // Create uploads directories if they don't exist (avatars now live in S3 —
+  // media stays local for now, message-media upload isn't implemented yet)
   const uploadsDir = './uploads';
-  const avatarsDir = './uploads/avatars';
   const mediaDir = './uploads/media';
 
-  [uploadsDir, avatarsDir, mediaDir].forEach(dir => {
+  [uploadsDir, mediaDir].forEach(dir => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }

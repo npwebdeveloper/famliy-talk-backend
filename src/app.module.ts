@@ -1,7 +1,7 @@
 import { Module, ValidationPipe } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { APP_PIPE } from '@nestjs/core';
+import { APP_PIPE, APP_INTERCEPTOR } from '@nestjs/core';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 import { AuthModule } from './auth/auth.module';
@@ -9,6 +9,8 @@ import { UsersModule } from './users/users.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
 import { WebsocketModule } from './websocket/websocket.module';
+import { S3Module } from './s3/s3.module';
+import { AvatarUrlInterceptor } from './common/interceptors/avatar-url.interceptor';
 
 @Module({
   imports: [
@@ -44,6 +46,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     }),
 
     // Feature modules
+    S3Module,
     AuthModule,
     UsersModule,
     ConversationsModule,
@@ -54,6 +57,10 @@ import { WebsocketModule } from './websocket/websocket.module';
     {
       provide: APP_PIPE,
       useClass: ValidationPipe,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AvatarUrlInterceptor,
     },
   ],
 })
