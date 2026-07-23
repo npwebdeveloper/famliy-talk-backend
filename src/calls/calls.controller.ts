@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Query, Body, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Body, UseGuards, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { CallsService } from './calls.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -21,8 +21,8 @@ export class CallsController {
     async findByConversation(
         @CurrentUser() user: any,
         @Param('conversationId') conversationId: string,
-        @Query('page', ParseIntPipe) page: number = 1,
-        @Query('limit', ParseIntPipe) limit: number = 30,
+        @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+        @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit: number,
     ) {
         return this.callsService.getHistory(conversationId, user.userId, page, limit);
     }

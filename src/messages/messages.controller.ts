@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, ParseIntPipe, Inject, forwardRef } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, UseGuards, ParseIntPipe, DefaultValuePipe, Inject, forwardRef } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { MessagesService } from './messages.service';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -44,8 +44,8 @@ export class MessagesController {
     async findByConversation(
         @CurrentUser() user: any,
         @Param('conversationId') conversationId: string,
-        @Query('page', ParseIntPipe) page: number = 1,
-        @Query('limit', ParseIntPipe) limit: number = 50,
+        @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+        @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
     ) {
         return this.messagesService.findByConversation(conversationId, user.userId, page, limit);
     }
