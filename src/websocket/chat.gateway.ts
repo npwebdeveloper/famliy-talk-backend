@@ -7,6 +7,7 @@ import {
     ConnectedSocket,
     MessageBody,
 } from '@nestjs/websockets';
+import { OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -14,6 +15,12 @@ import { MessagesService } from '../messages/messages.service';
 import { UsersService } from '../users/users.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { S3Service } from '../s3/s3.service';
+import { CallsService } from '../calls/calls.service';
+import { CallType } from '../calls/entities/call.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+
+/** How often the ringing-timeout / zombie-call sweeps run. */
+const CALL_SWEEP_INTERVAL_MS = 10_000;
 
 @WebSocketGateway({
     cors: {
@@ -21,11 +28,12 @@ import { S3Service } from '../s3/s3.service';
         credentials: true,
     },
 })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy {
     @WebSocketServer()
     server: Server;
 
     private userSockets: Map<string, string> = new Map(); // userId -> socketId
+    private callSweepInterval: NodeJS.Timeout;
 
     constructor(
         private jwtService: JwtService,
@@ -34,7 +42,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         private usersService: UsersService,
         private conversationsService: ConversationsService,
         private s3Service: S3Service,
+        private callsService: CallsService,
+        private notificationsService: NotificationsService,
     ) { }
+
+    onModuleInit() {
+        this.callSweepInterval = setInterval(() => this.runCallMaintenanceSweep(), CALL_SWEEP_INTERVAL_MS);
+    }
+
+    onModuleDestroy() {
+        clearInterval(this.callSweepInterval);
+    }
 
     async handleConnection(client: Socket) {
         try {
@@ -98,7 +116,205 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             const user = await this.usersService.findOne(userId);
             this.server.emit('user_offline', { userId, lastSeen: user.lastSeen });
 
+            // Cancel any call this user was ringing out (caller side only —
+            // see CallsService.handleUserDisconnect for why ongoing calls
+            // are left alone here).
+            try {
+                const cancelled = await this.callsService.handleUserDisconnect(userId);
+                cancelled.forEach((call) => {
+                    this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+                });
+            } catch (err) {
+                console.error('Call disconnect reconciliation failed:', err.message);
+            }
+
             console.log(`User ${userId} disconnected`);
+        }
+    }
+
+    // ── Call signaling ──────────────────────────────────────────────
+
+    @SubscribeMessage('call_invite')
+    async handleCallInvite(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { conversationId: string; calleeId: string; type: CallType },
+    ) {
+        const callerId = client.data.userId;
+        try {
+            const call = await this.callsService.initiateCall(callerId, data.conversationId, data.calleeId, data.type);
+
+            // Include caller name/avatar so the incoming-call screen can render
+            // immediately, without the callee's app needing a round trip first.
+            const caller = await this.usersService.findOne(callerId);
+            this.emitToUser(data.calleeId, 'call_ringing', {
+                callId: call.id,
+                conversationId: call.conversationId,
+                callerId,
+                callerName: caller.name,
+                callerAvatarUrl: caller.avatarUrl
+                    ? await this.s3Service.getPresignedUrl(caller.avatarUrl)
+                    : null,
+                type: call.type,
+            });
+
+            // Callee has no live socket (backgrounded/killed/offline) — the
+            // above emit went nowhere, so this is the only way they find out.
+            // Sent once per call, never repeated by the ring-timeout sweep.
+            if (!this.userSockets.has(data.calleeId)) {
+                this.notificationsService.sendIncomingCallPush(data.calleeId, caller.name, {
+                    callId: call.id,
+                    conversationId: call.conversationId,
+                    type: call.type,
+                }).catch((err) => console.error('Incoming-call push failed:', err.message));
+            }
+
+            return { success: true, call };
+        } catch (error) {
+            const reason = error?.response?.reason || error?.message || 'FAILED';
+            if (reason === 'BUSY') {
+                this.emitToUser(callerId, 'call_busy', { calleeId: data.calleeId });
+            }
+            return { success: false, reason, error: error.message };
+        }
+    }
+
+    /** Reported by whichever side's ICE connection reaches "connected" first — starts the duration clock. */
+    @SubscribeMessage('call_connected')
+    async handleCallConnected(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string },
+    ) {
+        try {
+            await this.callsService.markConnected(data.callId, client.data.userId);
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    @SubscribeMessage('call_accept')
+    async handleCallAccept(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string },
+    ) {
+        const userId = client.data.userId;
+        try {
+            const call = await this.callsService.acceptCall(data.callId, userId);
+            this.emitToUser(call.callerId, 'call_accepted', { callId: call.id, calleeId: userId });
+            return { success: true, call };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    @SubscribeMessage('call_reject')
+    async handleCallReject(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string },
+    ) {
+        const userId = client.data.userId;
+        try {
+            const call = await this.callsService.rejectCall(data.callId, userId);
+            this.emitToUser(call.callerId, 'call_rejected', { callId: call.id });
+            return { success: true, call };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    @SubscribeMessage('call_cancel')
+    async handleCallCancel(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string },
+    ) {
+        const userId = client.data.userId;
+        try {
+            const call = await this.callsService.cancelCall(data.callId, userId);
+            this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+            return { success: true, call };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    @SubscribeMessage('call_end')
+    async handleCallEnd(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string },
+    ) {
+        const userId = client.data.userId;
+        try {
+            const call = await this.callsService.endCall(data.callId, userId);
+            const otherUserId = userId === call.callerId ? call.calleeId : call.callerId;
+            this.emitToUser(otherUserId, 'call_ended', {
+                callId: call.id,
+                status: call.status,
+                durationSeconds: call.durationSeconds,
+            });
+            return { success: true, call };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Pure WebRTC signaling relay — no DB involved, just forwards to the
+     * other party's socket. The client already knows the peer's userId from
+     * the call_ringing/call_accepted payload, so no lookup is needed here.
+     */
+    @SubscribeMessage('call_offer')
+    handleCallOffer(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string; toUserId: string; sdp: any },
+    ) {
+        this.emitToUser(data.toUserId, 'call_offer', { callId: data.callId, sdp: data.sdp, fromUserId: client.data.userId });
+    }
+
+    @SubscribeMessage('call_answer')
+    handleCallAnswer(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string; toUserId: string; sdp: any },
+    ) {
+        this.emitToUser(data.toUserId, 'call_answer', { callId: data.callId, sdp: data.sdp, fromUserId: client.data.userId });
+    }
+
+    @SubscribeMessage('ice_candidate')
+    handleIceCandidate(
+        @ConnectedSocket() client: Socket,
+        @MessageBody() data: { callId: string; toUserId: string; candidate: any },
+    ) {
+        this.emitToUser(data.toUserId, 'ice_candidate', { callId: data.callId, candidate: data.candidate, fromUserId: client.data.userId });
+    }
+
+    /** Called from AuthController on logout — see CallsService.endActiveCallsForUser. */
+    async endActiveCallsForLoggedOutUser(userId: string): Promise<void> {
+        const ended = await this.callsService.endActiveCallsForUser(userId);
+        ended.forEach((call) => {
+            const otherUserId = userId === call.callerId ? call.calleeId : call.callerId;
+            this.emitToUser(otherUserId, call.status === 'ended' ? 'call_ended' : 'call_cancelled', {
+                callId: call.id,
+                status: call.status,
+                durationSeconds: call.durationSeconds,
+            });
+        });
+    }
+
+    /** Ringing-timeout + stale-ongoing sweeps — see CallsService for details. */
+    private async runCallMaintenanceSweep() {
+        try {
+            const missed = await this.callsService.sweepExpiredRingingCalls();
+            missed.forEach((call) => {
+                this.emitToUser(call.calleeId, 'call_missed', { callId: call.id });
+                this.emitToUser(call.callerId, 'call_missed', { callId: call.id });
+            });
+
+            const staleEnded = await this.callsService.sweepStaleOngoingCalls();
+            staleEnded.forEach((call) => {
+                this.emitToUser(call.callerId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
+                this.emitToUser(call.calleeId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
+            });
+        } catch (error) {
+            console.error('Call maintenance sweep failed:', error.message);
         }
     }
 

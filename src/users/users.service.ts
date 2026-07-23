@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like, In } from 'typeorm';
 import sharp from 'sharp';
 import { User } from './entities/user.entity';
 import { UserContact } from './entities/user-contact.entity';
+import { UserBlock } from './entities/user-block.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ContactItemDto } from './dto/sync-contacts.dto';
 import { normalizePhoneNumber } from '../common/utils/phone.util';
@@ -20,8 +21,35 @@ export class UsersService {
         @InjectRepository(UserContact)
         private userContactRepository: Repository<UserContact>,
 
+        @InjectRepository(UserBlock)
+        private userBlockRepository: Repository<UserBlock>,
+
         private s3Service: S3Service,
     ) { }
+
+    async blockUser(blockerId: string, blockedId: string): Promise<void> {
+        if (blockerId === blockedId) {
+            throw new BadRequestException('Cannot block yourself');
+        }
+        const existing = await this.userBlockRepository.findOne({ where: { blockerId, blockedId } });
+        if (existing) return; // idempotent
+        await this.userBlockRepository.save(this.userBlockRepository.create({ blockerId, blockedId }));
+    }
+
+    async unblockUser(blockerId: string, blockedId: string): Promise<void> {
+        await this.userBlockRepository.delete({ blockerId, blockedId });
+    }
+
+    /** True if either user has blocked the other. */
+    async isBlockedEitherWay(userId1: string, userId2: string): Promise<boolean> {
+        const block = await this.userBlockRepository.findOne({
+            where: [
+                { blockerId: userId1, blockedId: userId2 },
+                { blockerId: userId2, blockedId: userId1 },
+            ],
+        });
+        return !!block;
+    }
 
     async findOne(id: string): Promise<User> {
         const user = await this.userRepository.findOne({ where: { id } });

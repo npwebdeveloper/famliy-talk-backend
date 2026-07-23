@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Post, Body, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Put, Post, Delete, Body, Param, Query, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
@@ -145,5 +145,21 @@ export class UsersController {
         @Body() syncContactsDto: SyncContactsDto,
     ) {
         return this.usersService.syncContacts(user.userId, syncContactsDto.contacts);
+    }
+
+    @Post('block/:userId')
+    @ApiOperation({ summary: 'Block a user (also prevents calls between the two of you)' })
+    @ApiResponse({ status: 201, description: '{ success: true }' })
+    async blockUser(@CurrentUser() user: any, @Param('userId') userId: string) {
+        await this.usersService.blockUser(user.userId, userId);
+        return { success: true };
+    }
+
+    @Delete('block/:userId')
+    @ApiOperation({ summary: 'Unblock a user' })
+    @ApiResponse({ status: 200, description: '{ success: true }' })
+    async unblockUser(@CurrentUser() user: any, @Param('userId') userId: string) {
+        await this.usersService.unblockUser(user.userId, userId);
+        return { success: true };
     }
 }

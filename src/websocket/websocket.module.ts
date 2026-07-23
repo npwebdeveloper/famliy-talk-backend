@@ -5,12 +5,16 @@ import { ChatGateway } from './chat.gateway';
 import { MessagesModule } from '../messages/messages.module';
 import { UsersModule } from '../users/users.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { CallsModule } from '../calls/calls.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
     imports: [
         forwardRef(() => MessagesModule),
         UsersModule,
         ConversationsModule,
+        CallsModule,
+        NotificationsModule,
         JwtModule.registerAsync({
             imports: [ConfigModule],
             useFactory: async (configService: ConfigService) => ({
