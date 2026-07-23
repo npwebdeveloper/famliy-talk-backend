@@ -219,12 +219,12 @@ export class ConversationsService {
             .where('cp1.user_id = :userId1', { userId1 })
             .andWhere('cp2.user_id = :userId2', { userId2 })
             .andWhere('c.type = :type', { type: ConversationType.PRIVATE })
-            .select('cp1.conversation_id')
+            .select('cp1.conversation_id', 'conversationId')
             .getRawMany();
 
         if (conversations.length > 0) {
             return this.conversationRepository.findOne({
-                where: { id: conversations[0].cp1_conversation_id },
+                where: { id: conversations[0].conversationId },
                 relations: ['participants', 'participants.user'],
             });
         }
