@@ -10,11 +10,13 @@ import { User } from '../users/entities/user.entity';
 import { UserContact } from '../users/entities/user-contact.entity';
 import { OtpVerification } from './entities/otp-verification.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { WebsocketModule } from '../websocket/websocket.module';
 
 @Module({
     imports: [
         TypeOrmModule.forFeature([User, OtpVerification, UserContact]),
         NotificationsModule,
+        WebsocketModule,
         PassportModule.register({ defaultStrategy: 'jwt' }),
         JwtModule.registerAsync({
             imports: [ConfigModule],

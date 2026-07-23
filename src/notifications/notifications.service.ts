@@ -107,6 +107,65 @@ export class NotificationsService implements OnModuleInit {
     }
 
     /**
+     * Push an incoming-call notification — sent once per call, only when the
+     * callee has no live socket connection (offline/backgrounded/killed).
+     * Uses its own Android channel (family_talk_calls) with max priority so it
+     * can post as a full-screen/heads-up alert instead of a quiet banner.
+     */
+    async sendIncomingCallPush(
+        calleeId: string,
+        callerName: string,
+        meta: { callId: string; conversationId: string; type: 'audio' | 'video' },
+    ): Promise<void> {
+        if (!this.enabled) return;
+
+        const user = await this.userRepository.findOne({
+            where: { id: calleeId },
+            select: ['id', 'fcmToken'],
+        });
+        if (!user?.fcmToken) return;
+
+        try {
+            await this.messaging.send({
+                token: user.fcmToken,
+                notification: {
+                    title: callerName || 'Family Talk',
+                    body: meta.type === 'video' ? 'Incoming video call' : 'Incoming call',
+                },
+                data: {
+                    type: 'incoming_call',
+                    callId: meta.callId,
+                    conversationId: meta.conversationId,
+                    callType: meta.type,
+                },
+                android: {
+                    priority: 'high',
+                    notification: {
+                        channelId: 'family_talk_calls',
+                        sound: 'default',
+                        priority: 'max',
+                    },
+                },
+                apns: {
+                    headers: { 'apns-priority': '10' },
+                    payload: { aps: { sound: 'default', 'content-available': 1 } },
+                },
+            });
+        } catch (error) {
+            if (
+                error.code === 'messaging/registration-token-not-registered' ||
+                error.code === 'messaging/invalid-registration-token' ||
+                error.code === 'messaging/invalid-argument'
+            ) {
+                await this.userRepository.update({ id: calleeId }, { fcmToken: null });
+                this.logger.log(`Cleared stale FCM token for user ${calleeId}`);
+            } else {
+                this.logger.error(`Incoming-call push failed for user ${calleeId}: ${error.message}`);
+            }
+        }
+    }
+
+    /**
      * Push "your contact joined" notification to a user whose saved contact just registered.
      */
     async sendContactJoinedPush(

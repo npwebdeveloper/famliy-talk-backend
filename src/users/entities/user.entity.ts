@@ -28,6 +28,9 @@ export class User {
     @Column({ nullable: true, type: 'varchar', length: 512, name: 'fcm_token' })
     fcmToken: string | null;
 
+    @Column({ default: true, name: 'is_active' })
+    isActive: boolean;
+
     @CreateDateColumn({ name: 'created_at' })
     createdAt: Date;
 

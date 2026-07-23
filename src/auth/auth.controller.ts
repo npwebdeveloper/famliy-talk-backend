@@ -6,11 +6,15 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { ChatGateway } from '../websocket/chat.gateway';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-    constructor(private readonly authService: AuthService) { }
+    constructor(
+        private readonly authService: AuthService,
+        private readonly chatGateway: ChatGateway,
+    ) { }
 
     @Post('send-otp')
     @ApiOperation({
@@ -52,6 +56,9 @@ export class AuthController {
     @ApiResponse({ status: 201, description: 'Logged out' })
     @ApiResponse({ status: 401, description: 'Missing/invalid access token' })
     async logout(@CurrentUser() user: any) {
+        // A deliberate sign-out ends any call this user is still ringing or
+        // on, and lets the other party know — not just a background/network hiccup.
+        await this.chatGateway.endActiveCallsForLoggedOutUser(user.userId);
         return this.authService.logout(user.userId);
     }
 
