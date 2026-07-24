@@ -8,6 +8,19 @@ export enum MessageType {
     IMAGE = 'image',
     VIDEO = 'video',
     AUDIO = 'audio',
+    CALL = 'call',
+}
+
+export enum MessageCallType {
+    AUDIO = 'audio',
+    VIDEO = 'video',
+}
+
+export enum MessageCallStatus {
+    COMPLETED = 'completed',
+    MISSED = 'missed',
+    REJECTED = 'rejected',
+    CANCELLED = 'cancelled',
 }
 
 @Entity('messages')
@@ -34,6 +47,15 @@ export class Message {
 
     @Column({ nullable: true, name: 'media_url' })
     mediaUrl: string;
+
+    @Column({ type: 'enum', enum: MessageCallType, nullable: true, name: 'call_type' })
+    callType: MessageCallType | null;
+
+    @Column({ type: 'enum', enum: MessageCallStatus, nullable: true, name: 'call_status' })
+    callStatus: MessageCallStatus | null;
+
+    @Column({ type: 'int', nullable: true, name: 'call_duration_seconds' })
+    callDurationSeconds: number | null;
 
     @CreateDateColumn({ name: 'created_at' })
     @Index()

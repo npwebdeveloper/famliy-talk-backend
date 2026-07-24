@@ -27,6 +27,19 @@ export class CallsController {
         return this.callsService.getHistory(conversationId, user.userId, page, limit);
     }
 
+    @Get('me')
+    @ApiOperation({ summary: "Global call log for the current user (Calls tab) — every call across all conversations, newest first" })
+    @ApiQuery({ name: 'page', required: false, example: 1 })
+    @ApiQuery({ name: 'limit', required: false, example: 30 })
+    @ApiResponse({ status: 200, description: '{ calls, total } — each call includes caller and callee (with avatarUrl presigned)' })
+    async getMyCallHistory(
+        @CurrentUser() user: any,
+        @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+        @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit: number,
+    ) {
+        return this.callsService.getMyCallHistory(user.userId, page, limit);
+    }
+
     @Get('turn-credentials')
     @ApiOperation({
         summary: 'Get short-lived TURN server credentials',
