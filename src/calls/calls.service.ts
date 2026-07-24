@@ -250,6 +250,20 @@ export class CallsService {
         return call;
     }
 
+    /**
+     * The initial call_ringing emit fires once, at invite time — if the
+     * callee's socket wasn't connected yet (backgrounded/killed), it goes
+     * nowhere and is never repeated. Called when a socket (re)connects so
+     * the gateway can replay it, the same way deliverPendingMessages
+     * resyncs missed messages on reconnect.
+     */
+    async findActiveRingingCallForCallee(calleeId: string): Promise<Call | null> {
+        return this.callRepository.findOne({
+            where: { calleeId, status: CallStatus.RINGING },
+            order: { createdAt: 'DESC' },
+        });
+    }
+
     /** Accumulates client-reported connection health for basic ICE/TURN observability. */
     async reportStats(
         callId: string,
@@ -310,6 +324,18 @@ export class CallsService {
             avgIceFailures: avg(calls.map((c) => c.iceFailures)),
             avgReconnectCount: avg(calls.map((c) => c.reconnectCount)),
         };
+    }
+
+    /** Global call log for the Calls tab — every call this user was party to, across all conversations. */
+    async getMyCallHistory(userId: string, page = 1, limit = 30): Promise<{ calls: Call[]; total: number }> {
+        const [calls, total] = await this.callRepository.findAndCount({
+            where: [{ callerId: userId }, { calleeId: userId }],
+            relations: ['caller', 'callee'],
+            order: { createdAt: 'DESC' },
+            skip: (page - 1) * limit,
+            take: limit,
+        });
+        return { calls, total };
     }
 
     async getHistory(conversationId: string, userId: string, page = 1, limit = 30): Promise<{ calls: Call[]; total: number }> {

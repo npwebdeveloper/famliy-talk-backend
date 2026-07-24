@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Message } from './entities/message.entity';
+import { Message, MessageType, MessageCallType, MessageCallStatus } from './entities/message.entity';
 import { MessageStatus, MessageStatusType } from './entities/message-status.entity';
 import { ConversationParticipant } from '../conversations/entities/conversation-participant.entity';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -75,6 +75,48 @@ export class MessagesService {
             )
             .catch(err => console.error('New-message push failed:', err.message));
 
+        return savedMessage;
+    }
+
+    /**
+     * System-generated call-log bubble (like WhatsApp's "📞 Video call, 5:32")
+     * — created once a call reaches a terminal state. senderId is always the
+     * caller, so the callee gets a normal SENT status row like any message.
+     */
+    async createCallLogMessage(
+        conversationId: string,
+        callerId: string,
+        callType: MessageCallType,
+        callStatus: MessageCallStatus,
+        callDurationSeconds: number | null,
+    ): Promise<Message> {
+        const message = this.messageRepository.create({
+            conversationId,
+            senderId: callerId,
+            type: MessageType.CALL,
+            callType,
+            callStatus,
+            callDurationSeconds,
+        });
+        await this.messageRepository.save(message);
+
+        const participants = await this.participantRepository.find({ where: { conversationId } });
+        const statuses = participants
+            .filter(p => p.userId !== callerId)
+            .map(p =>
+                this.messageStatusRepository.create({
+                    messageId: message.id,
+                    userId: p.userId,
+                    status: MessageStatusType.SENT,
+                }),
+            );
+        await this.messageStatusRepository.save(statuses);
+
+        const savedMessage = await this.messageRepository.findOne({
+            where: { id: message.id },
+            relations: ['sender', 'statuses'],
+        });
+        if (!savedMessage) throw new Error('Failed to retrieve saved call-log message');
         return savedMessage;
     }
 

@@ -16,7 +16,8 @@ import { UsersService } from '../users/users.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { S3Service } from '../s3/s3.service';
 import { CallsService } from '../calls/calls.service';
-import { CallType } from '../calls/entities/call.entity';
+import { Call, CallType, CallStatus } from '../calls/entities/call.entity';
+import { MessageCallType, MessageCallStatus } from '../messages/entities/message.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 
 /** How often the ringing-timeout / zombie-call sweeps run. */
@@ -92,6 +93,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
                 console.error('Pending delivery sweep failed:', err.message),
             );
 
+            // Same idea for calls: if this user has a call still ringing for
+            // them (the original invite-time emit went nowhere because they
+            // were backgrounded/killed and only just reconnected — e.g. by
+            // tapping the FCM notification), replay it now so the incoming
+            // call screen actually appears instead of just the notification.
+            this.resyncRingingCall(userId, client).catch(err =>
+                console.error('Ringing-call resync failed:', err.message),
+            );
+
             console.log(`User ${userId} connected with socket ${client.id}`);
         } catch (error) {
             console.error('Connection error:', error.message);
@@ -123,6 +133,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
                 const cancelled = await this.callsService.handleUserDisconnect(userId);
                 cancelled.forEach((call) => {
                     this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+                    this.logCallToChat(call);
                 });
             } catch (err) {
                 console.error('Call disconnect reconciliation failed:', err.message);
@@ -216,6 +227,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         try {
             const call = await this.callsService.rejectCall(data.callId, userId);
             this.emitToUser(call.callerId, 'call_rejected', { callId: call.id });
+            this.logCallToChat(call);
             return { success: true, call };
         } catch (error) {
             return { success: false, error: error.message };
@@ -231,6 +243,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         try {
             const call = await this.callsService.cancelCall(data.callId, userId);
             this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+            this.logCallToChat(call);
             return { success: true, call };
         } catch (error) {
             return { success: false, error: error.message };
@@ -251,6 +264,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
                 status: call.status,
                 durationSeconds: call.durationSeconds,
             });
+            this.logCallToChat(call);
             return { success: true, call };
         } catch (error) {
             return { success: false, error: error.message };
@@ -296,6 +310,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
                 status: call.status,
                 durationSeconds: call.durationSeconds,
             });
+            this.logCallToChat(call);
         });
     }
 
@@ -306,12 +321,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
             missed.forEach((call) => {
                 this.emitToUser(call.calleeId, 'call_missed', { callId: call.id });
                 this.emitToUser(call.callerId, 'call_missed', { callId: call.id });
+                this.logCallToChat(call);
             });
 
             const staleEnded = await this.callsService.sweepStaleOngoingCalls();
             staleEnded.forEach((call) => {
                 this.emitToUser(call.callerId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
                 this.emitToUser(call.calleeId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
+                this.logCallToChat(call);
             });
         } catch (error) {
             console.error('Call maintenance sweep failed:', error.message);
@@ -559,5 +576,53 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         if (delivered.length > 0) {
             console.log(`Marked ${delivered.length} pending message(s) as delivered for user ${userId}`);
         }
+    }
+
+    /**
+     * WhatsApp-style "📞 Video call, 5:32" bubble in the chat — fire-and-forget
+     * from every terminal call transition (end/reject/cancel/missed-sweep/
+     * stale-sweep/disconnect-cancel/logout-end). BUSY never creates a Call
+     * row at all (rejected before persistence), so it's not in this map and
+     * intentionally produces no message.
+     */
+    private async logCallToChat(call: Call) {
+        const statusMap: Partial<Record<CallStatus, MessageCallStatus>> = {
+            [CallStatus.ENDED]: MessageCallStatus.COMPLETED,
+            [CallStatus.MISSED]: MessageCallStatus.MISSED,
+            [CallStatus.REJECTED]: MessageCallStatus.REJECTED,
+            [CallStatus.CANCELLED]: MessageCallStatus.CANCELLED,
+        };
+        const callStatus = statusMap[call.status];
+        if (!callStatus) return;
+
+        try {
+            const message = await this.messagesService.createCallLogMessage(
+                call.conversationId,
+                call.callerId,
+                call.type === CallType.VIDEO ? MessageCallType.VIDEO : MessageCallType.AUDIO,
+                callStatus,
+                call.status === CallStatus.ENDED ? call.durationSeconds : null,
+            );
+            await this.notifyNewMessage(message, call.callerId);
+        } catch (err) {
+            console.error('Call-log message creation failed:', err.message);
+        }
+    }
+
+    private async resyncRingingCall(userId: string, client: Socket) {
+        const call = await this.callsService.findActiveRingingCallForCallee(userId);
+        if (!call) return;
+
+        const caller = await this.usersService.findOne(call.callerId);
+        client.emit('call_ringing', {
+            callId: call.id,
+            conversationId: call.conversationId,
+            callerId: call.callerId,
+            callerName: caller.name,
+            callerAvatarUrl: caller.avatarUrl
+                ? await this.s3Service.getPresignedUrl(caller.avatarUrl)
+                : null,
+            type: call.type,
+        });
     }
 }
