@@ -109,8 +109,17 @@ export class NotificationsService implements OnModuleInit {
     /**
      * Push an incoming-call notification — sent once per call, only when the
      * callee has no live socket connection (offline/backgrounded/killed).
-     * Uses its own Android channel (family_talk_calls) with max priority so it
-     * can post as a full-screen/heads-up alert instead of a quiet banner.
+     *
+     * Deliberately data-only (no top-level `notification` block): a message
+     * with a `notification` block is auto-displayed by the OS as a plain
+     * tray notification and never reaches app code, so the phone can't
+     * actually ring — the user only sees a silent banner and has to tap it
+     * before anything happens. A data-only, high-priority message instead
+     * wakes the app's background notification task (see
+     * backgroundNotificationTask.ts in the app), which calls RNCallKeep
+     * directly to show the real native incoming-call UI and ring — the same
+     * mechanism a real phone call uses, so it also respects the device's
+     * silent/vibrate/DND setting automatically instead of always playing a sound.
      */
     async sendIncomingCallPush(
         calleeId: string,
@@ -128,27 +137,19 @@ export class NotificationsService implements OnModuleInit {
         try {
             await this.messaging.send({
                 token: user.fcmToken,
-                notification: {
-                    title: callerName || 'Family Talk',
-                    body: meta.type === 'video' ? 'Incoming video call' : 'Incoming call',
-                },
                 data: {
                     type: 'incoming_call',
                     callId: meta.callId,
                     conversationId: meta.conversationId,
                     callType: meta.type,
+                    callerName: callerName || 'Family Talk',
                 },
                 android: {
                     priority: 'high',
-                    notification: {
-                        channelId: 'family_talk_calls',
-                        sound: 'default',
-                        priority: 'max',
-                    },
                 },
                 apns: {
                     headers: { 'apns-priority': '10' },
-                    payload: { aps: { sound: 'default', 'content-available': 1 } },
+                    payload: { aps: { 'content-available': 1 } },
                 },
             });
         } catch (error) {
