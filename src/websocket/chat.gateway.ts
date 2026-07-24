@@ -36,6 +36,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     private userSockets: Map<string, string> = new Map(); // userId -> socketId
     private callSweepInterval: NodeJS.Timeout;
 
+    // socketId -> who's typing where. Purely in-memory/ephemeral — never
+    // persisted, never replayed on reconnect (see handleTyping/handleDisconnect).
+    private typingBySocket: Map<string, { userId: string; conversationId: string }> = new Map();
+
     constructor(
         private jwtService: JwtService,
         private configService: ConfigService,
@@ -115,6 +119,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
 
     async handleDisconnect(client: Socket) {
         const userId = client.data.userId;
+
+        // Unexpected drop mid-typing must not leave the other side staring at
+        // a "typing..." indicator forever — nothing else will ever tell them to clear it.
+        const typingState = this.typingBySocket.get(client.id);
+        if (typingState) {
+            this.typingBySocket.delete(client.id);
+            this.server.to(`conversation:${typingState.conversationId}`).emit('user_stopped_typing', {
+                conversationId: typingState.conversationId,
+                userId: typingState.userId,
+            });
+        }
 
         if (userId) {
             this.userSockets.delete(userId);
@@ -379,27 +394,66 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     }
 
     @SubscribeMessage('typing_start')
-    handleTypingStart(
+    async handleTypingStart(
         @ConnectedSocket() client: Socket,
         @MessageBody() data: { conversationId: string },
     ) {
-        const userId = client.data.userId;
-        client.to(`conversation:${data.conversationId}`).emit('user_typing', {
-            conversationId: data.conversationId,
-            userId,
-        });
+        await this.handleTyping(client, data, true);
     }
 
     @SubscribeMessage('typing_stop')
-    handleTypingStop(
+    async handleTypingStop(
         @ConnectedSocket() client: Socket,
         @MessageBody() data: { conversationId: string },
     ) {
+        await this.handleTyping(client, data, false);
+    }
+
+    /**
+     * Shared typing_start/typing_stop handler. Purely ephemeral — nothing here
+     * ever touches the DB, so there's nothing to replay when a receiver
+     * reconnects, and an offline participant is skipped rather than queued.
+     */
+    private async handleTyping(
+        client: Socket,
+        data: { conversationId: string },
+        isTyping: boolean,
+    ) {
         const userId = client.data.userId;
-        client.to(`conversation:${data.conversationId}`).emit('user_stopped_typing', {
-            conversationId: data.conversationId,
-            userId,
-        });
+        if (!userId || !data?.conversationId) return;
+
+        try {
+            const participantIds = await this.conversationsService.getParticipantUserIds(data.conversationId);
+            if (!participantIds.includes(userId)) return; // not authorized for this conversation
+
+            if (isTyping) {
+                this.typingBySocket.set(client.id, { userId, conversationId: data.conversationId });
+            } else {
+                this.typingBySocket.delete(client.id);
+            }
+
+            const event = isTyping ? 'user_typing' : 'user_stopped_typing';
+            const payload = { conversationId: data.conversationId, userId };
+            const room = `conversation:${data.conversationId}`;
+
+            // Everyone currently viewing the conversation — every device of every
+            // participant, private or group — gets it via the room, sender excluded.
+            client.to(room).emit(event, payload);
+
+            // Participants who are online but not in the room yet (e.g. sitting on
+            // the chat list). Offline participants are skipped entirely — never queued.
+            for (const participantId of participantIds) {
+                if (participantId === userId) continue;
+                const socketId = this.userSockets.get(participantId);
+                if (!socketId) continue;
+                const socket = this.server.sockets.sockets.get(socketId);
+                if (socket && !socket.rooms.has(room)) {
+                    socket.emit(event, payload);
+                }
+            }
+        } catch (error) {
+            console.error('Error handling typing event:', error.message);
+        }
     }
 
     @SubscribeMessage('mark_read')
@@ -504,6 +558,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
      * gets the event twice; the sender gets the message via the ack/room.
      */
     async notifyNewMessage(message: any, senderId: string) {
+        // Race-condition safety net: a message arriving always wins over a
+        // stale typing indicator, whether or not the client remembered to
+        // emit typing_stop first (REST send path never does).
+        this.clearTypingState(senderId, message.conversationId);
+
         // WebSocket emits bypass the HTTP response pipeline (and therefore
         // AvatarUrlInterceptor) entirely, so the sender's avatar key has to
         // be presigned here explicitly — this is the only such spot, since
@@ -559,6 +618,20 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         const senderSocket = this.server.sockets.sockets.get(senderSocketId);
         if (senderSocket && !senderSocket.rooms.has(`conversation:${payload.conversationId}`)) {
             senderSocket.emit(event, payload);
+        }
+    }
+
+    /** Drops any in-memory typing state this user has for this conversation, across every socket/device. */
+    private clearTypingState(userId: string, conversationId: string) {
+        let cleared = false;
+        for (const [socketId, state] of this.typingBySocket) {
+            if (state.userId === userId && state.conversationId === conversationId) {
+                this.typingBySocket.delete(socketId);
+                cleared = true;
+            }
+        }
+        if (cleared) {
+            this.server.to(`conversation:${conversationId}`).emit('user_stopped_typing', { conversationId, userId });
         }
     }
 
