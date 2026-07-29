@@ -147,7 +147,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
             try {
                 const cancelled = await this.callsService.handleUserDisconnect(userId);
                 cancelled.forEach((call) => {
-                    this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+                    this.emitCallTermination(call.calleeId, 'call_cancelled', { callId: call.id });
                     this.logCallToChat(call);
                 });
             } catch (err) {
@@ -257,7 +257,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         const userId = client.data.userId;
         try {
             const call = await this.callsService.cancelCall(data.callId, userId);
-            this.emitToUser(call.calleeId, 'call_cancelled', { callId: call.id });
+            this.emitCallTermination(call.calleeId, 'call_cancelled', { callId: call.id });
             this.logCallToChat(call);
             return { success: true, call };
         } catch (error) {
@@ -274,7 +274,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         try {
             const call = await this.callsService.endCall(data.callId, userId);
             const otherUserId = userId === call.callerId ? call.calleeId : call.callerId;
-            this.emitToUser(otherUserId, 'call_ended', {
+            this.emitCallTermination(otherUserId, 'call_ended', {
                 callId: call.id,
                 status: call.status,
                 durationSeconds: call.durationSeconds,
@@ -320,7 +320,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         const ended = await this.callsService.endActiveCallsForUser(userId);
         ended.forEach((call) => {
             const otherUserId = userId === call.callerId ? call.calleeId : call.callerId;
-            this.emitToUser(otherUserId, call.status === 'ended' ? 'call_ended' : 'call_cancelled', {
+            this.emitCallTermination(otherUserId, call.status === 'ended' ? 'call_ended' : 'call_cancelled', {
                 callId: call.id,
                 status: call.status,
                 durationSeconds: call.durationSeconds,
@@ -334,15 +334,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         try {
             const missed = await this.callsService.sweepExpiredRingingCalls();
             missed.forEach((call) => {
-                this.emitToUser(call.calleeId, 'call_missed', { callId: call.id });
-                this.emitToUser(call.callerId, 'call_missed', { callId: call.id });
+                this.emitCallTermination(call.calleeId, 'call_missed', { callId: call.id });
+                this.emitCallTermination(call.callerId, 'call_missed', { callId: call.id });
                 this.logCallToChat(call);
             });
 
             const staleEnded = await this.callsService.sweepStaleOngoingCalls();
             staleEnded.forEach((call) => {
-                this.emitToUser(call.callerId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
-                this.emitToUser(call.calleeId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
+                this.emitCallTermination(call.callerId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
+                this.emitCallTermination(call.calleeId, 'call_ended', { callId: call.id, status: call.status, durationSeconds: call.durationSeconds });
                 this.logCallToChat(call);
             });
         } catch (error) {
@@ -542,6 +542,28 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
         if (socketId) {
             this.server.to(socketId).emit(event, data);
         }
+    }
+
+    /**
+     * Emit a call-TERMINATION event (missed/cancelled/ended/rejected) — over
+     * the socket when the user has one, and additionally as a silent push when
+     * they don't.
+     *
+     * The push half matters because a device woken by the incoming-call push
+     * is showing a native CallKeep call UI while having no socket at all. If
+     * only the socket path existed, that device would never hear that the call
+     * is over: it keeps ringing, and the stuck Telecom connection blocks every
+     * subsequent incoming call (see NotificationsService.sendCallEndedPush).
+     */
+    private emitCallTermination(userId: string, event: string, data: { callId: string;[k: string]: any }) {
+        const socketId = this.userSockets.get(userId);
+        if (socketId) {
+            this.server.to(socketId).emit(event, data);
+            return;
+        }
+        this.notificationsService
+            .sendCallEndedPush(userId, data.callId)
+            .catch((err) => console.error('Call-ended push failed:', err.message));
     }
 
     // Emit an event to everyone viewing the conversation (room members)

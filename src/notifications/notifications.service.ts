@@ -191,6 +191,56 @@ export class NotificationsService implements OnModuleInit {
     }
 
     /**
+     * Tell a device that a call it may still be showing is over (missed,
+     * cancelled, rejected or hung up).
+     *
+     * Normally this travels over the socket, but a killed/backgrounded app has
+     * no socket — and it's exactly that app which was woken by the
+     * incoming-call push and is now showing a native CallKeep call UI. Without
+     * this push nothing ever tells it to stop: the connection stays RINGING in
+     * Android Telecom forever, keeps vibrating, and — because Telecom refuses a
+     * second incoming connection for the same phone account — silently BLOCKS
+     * every later call to that device. Verified on-device: an audio call left
+     * a stuck `state=RINGING` connection which made the next (video) call fail
+     * with onCreateIncomingConnectionFailed.
+     *
+     * Deliberately data-only and normal priority: it must reach app code (the
+     * background handler ends the CallKeep call) and must never surface as a
+     * visible "call ended" banner to the user.
+     */
+    async sendCallEndedPush(userId: string, callId: string): Promise<void> {
+        if (!this.enabled) return;
+
+        const user = await this.userRepository.findOne({
+            where: { id: userId },
+            select: ['id', 'fcmToken'],
+        });
+        if (!user?.fcmToken) return;
+
+        try {
+            await this.messaging.send({
+                token: user.fcmToken,
+                data: { type: 'call_ended', callId },
+                android: { priority: 'high', ttl: 60_000 },
+                apns: {
+                    headers: { 'apns-priority': '10' },
+                    payload: { aps: { 'content-available': 1 } },
+                },
+            });
+        } catch (error) {
+            if (
+                error.code === 'messaging/registration-token-not-registered' ||
+                error.code === 'messaging/invalid-registration-token' ||
+                error.code === 'messaging/invalid-argument'
+            ) {
+                await this.userRepository.update({ id: userId }, { fcmToken: null });
+            } else {
+                this.logger.error(`Call-ended push failed for user ${userId}: ${error.message}`);
+            }
+        }
+    }
+
+    /**
      * Push "your contact joined" notification to a user whose saved contact just registered.
      */
     async sendContactJoinedPush(
