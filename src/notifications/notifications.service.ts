@@ -161,7 +161,12 @@ export class NotificationsService implements OnModuleInit {
                     // backend's own 45s ring timeout (RING_TIMEOUT_MS).
                     ttl: 45_000,
                     notification: {
-                        channelId: 'family_talk_calls',
+                        // Must stay in sync with CALLS_CHANNEL_ID in the app's
+                        // notifications.service.ts. v2 because the original
+                        // "family_talk_calls" channel gets permanently demoted
+                        // to IMPORTANCE_NONE by RNCallKeep's foreground service
+                        // on-device, which silences incoming-call pushes.
+                        channelId: 'family_talk_calls_v2',
                         priority: 'max',
                         sound: 'default',
                     },
