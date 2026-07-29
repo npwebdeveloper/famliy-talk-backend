@@ -110,16 +110,21 @@ export class NotificationsService implements OnModuleInit {
      * Push an incoming-call notification — sent once per call, only when the
      * callee has no live socket connection (offline/backgrounded/killed).
      *
-     * Deliberately data-only (no top-level `notification` block): a message
-     * with a `notification` block is auto-displayed by the OS as a plain
-     * tray notification and never reaches app code, so the phone can't
-     * actually ring — the user only sees a silent banner and has to tap it
-     * before anything happens. A data-only, high-priority message instead
-     * wakes the app's background notification task (see
-     * backgroundNotificationTask.ts in the app), which calls RNCallKeep
-     * directly to show the real native incoming-call UI and ring — the same
-     * mechanism a real phone call uses, so it also respects the device's
-     * silent/vibrate/DND setting automatically instead of always playing a sound.
+     * Carries BOTH a `data` payload and a `notification` block, deliberately:
+     *
+     * - `data` wakes the app's background handler (backgroundCallHandler.ts),
+     *   which calls RNCallKeep to show the real native incoming-call UI and
+     *   ring — the same mechanism a real phone call uses, so it also respects
+     *   the device's silent/vibrate/DND setting automatically.
+     * - `notification` is the FALLBACK. An earlier version sent data-only, on
+     *   the theory that a notification block would stop the handler from
+     *   running. The practical result was worse: Android never auto-displays
+     *   a data-only message, so whenever the background handler didn't fire
+     *   (which is not guaranteed — the OS can defer or drop background wakeups
+     *   under Doze/OEM battery managers) the callee saw *nothing at all* — no
+     *   ring and no notification. With this block the OS always shows at least
+     *   a high-priority call notification, so an incoming call can never be
+     *   completely invisible.
      */
     async sendIncomingCallPush(
         calleeId: string,
@@ -137,6 +142,10 @@ export class NotificationsService implements OnModuleInit {
         try {
             await this.messaging.send({
                 token: user.fcmToken,
+                notification: {
+                    title: callerName || 'Family Talk',
+                    body: meta.type === 'video' ? '📹 Incoming video call' : '📞 Incoming call',
+                },
                 data: {
                     type: 'incoming_call',
                     callId: meta.callId,
@@ -146,10 +155,20 @@ export class NotificationsService implements OnModuleInit {
                 },
                 android: {
                     priority: 'high',
+                    // Calls are time-sensitive: a stale "incoming call" push
+                    // delivered minutes late (device was in Doze, offline, etc.)
+                    // is worse than none, so FCM drops it instead. Matches the
+                    // backend's own 45s ring timeout (RING_TIMEOUT_MS).
+                    ttl: 45_000,
+                    notification: {
+                        channelId: 'family_talk_calls',
+                        priority: 'max',
+                        sound: 'default',
+                    },
                 },
                 apns: {
                     headers: { 'apns-priority': '10' },
-                    payload: { aps: { 'content-available': 1 } },
+                    payload: { aps: { sound: 'default', 'content-available': 1 } },
                 },
             });
         } catch (error) {
