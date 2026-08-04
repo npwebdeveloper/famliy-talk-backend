@@ -10,6 +10,7 @@ import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
 import { WebsocketModule } from './websocket/websocket.module';
 import { CallsModule } from './calls/calls.module';
+import { DocumentsModule } from './documents/documents.module';
 import { S3Module } from './s3/s3.module';
 import { AvatarUrlInterceptor } from './common/interceptors/avatar-url.interceptor';
 
@@ -54,6 +55,7 @@ import { AvatarUrlInterceptor } from './common/interceptors/avatar-url.intercept
     MessagesModule,
     WebsocketModule,
     CallsModule,
+    DocumentsModule,
   ],
   providers: [
     {

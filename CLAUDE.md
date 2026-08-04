@@ -8,7 +8,7 @@ NestJS REST API + WebSocket gateway for the Family Talk chat app. Phone OTP auth
 - **Database**: MySQL via TypeORM (`synchronize: false` — schema managed by migrations, see Migrations section)
 - **Auth**: JWT (access + refresh tokens) + Passport
 - **Real-time**: Socket.IO via `@nestjs/websockets`
-- **File uploads**: Multer (avatars stored in `./uploads/avatars/`)
+- **File uploads**: Multer (memory storage) → AWS S3, private bucket (`avatars/` and `personal/` prefixes)
 - **Validation**: class-validator + class-transformer (global ValidationPipe)
 
 ## Port
@@ -92,6 +92,7 @@ src/
 - **messages**: id, conversation_id, sender_id, text, type, media_url
 - **message_status**: message_id, user_id, status (sent/delivered/read)
 - **user_contacts**: id, owner_id (FK→users), phone_number, contact_name, is_registered, registered_user_id (FK→users nullable)
+- **documents**: id, owner_id (FK→users, ON DELETE CASCADE), s3_key, original_name, mime_type, size, created_at
 
 ## Environment Variables (`.env`)
 ```
@@ -116,7 +117,38 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 - Production: wire in Twilio/AWS SNS in `auth.service.ts → sendOtp()`
 
 ## Static Files
-Uploaded avatars served at `/uploads/avatars/<filename>` via ServeStatic from `./uploads/`.
+The ServeStatic mount at `/uploads` (from `./uploads/`) is legacy — avatars now live in S3, not on disk. See the S3 Storage section.
+
+## S3 Storage (private bucket)
+
+One bucket (`AWS_S3_BUCKET_NAME`), nothing publicly readable, two prefixes:
+
+| Prefix | Written by | Read path |
+|--------|-----------|-----------|
+| `avatars/<userId>/<uuid>.jpg` | `POST /users/avatar` | `avatarUrl` fields are swapped for a 6-day presigned URL by the global `AvatarUrlInterceptor` |
+| `personal/<userId>/<uuid>.<ext>` | nothing — no upload endpoint exists (see Private Documents) | Bytes streamed through `GET /documents/:id/file` — no key or presigned URL ever reaches the client |
+
+[S3Service](src/s3/s3.service.ts) is the only place the SDK is touched: `uploadBuffer`, `getObjectStream`, `deleteObject`, `getPresignedUrl`, plus a key builder per prefix.
+
+## Private Documents (`/documents`) — download only, JWT protected
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/documents/:id/file` | Stream the actual bytes of a document the caller owns |
+
+**This module is read-only on purpose.** Upload, list, metadata and delete endpoints were built and then deliberately removed — the API exposes download and nothing else. Consequences:
+
+- **Nothing can write to the `documents` table through the API.** New rows have to be inserted manually (and the matching object put into S3 under `personal/<userId>/<uuid>.<ext>`), or the upload endpoint has to be restored from git history.
+- Deleting a document is likewise manual — removing a row leaves its S3 object orphaned unless deleted separately.
+- The removed code (multipart upload with mime+extension whitelist, 20MB cap, orphan cleanup, `documents.constants.ts`, `S3Service.buildPersonalKey`) is recoverable from git if the write side is ever wanted back.
+
+How the surviving endpoint behaves:
+
+- Module: `src/documents/` — controller, service, `UserDocument` entity (named to avoid shadowing the DOM `Document` type).
+- **Ownership is the security model**: the read goes through `DocumentsService.getOwned()`, which scopes the lookup by `ownerId`. Another user's id returns 404, identical to a nonexistent one, so nothing leaks about what other people store.
+- `s3Key` is never sent to the client — only the bytes are.
+- Sets the stored `Content-Type` (not whatever S3 echoes), `nosniff`, `Cache-Control: private, no-store`, and `Content-Disposition: inline` for images / `attachment` otherwise.
+- Filenames go out with an ASCII fallback plus RFC 5987 `filename*=UTF-8''…`, since HTTP headers are latin1 and real names contain things like U+202F.
 
 ## Run Commands
 ```bash
@@ -189,6 +221,7 @@ Module: `src/notifications/` — `NotificationsService` wraps `firebase-admin`.
 - `user_contacts` table + `POST /users/sync-contacts` endpoint
 - Auto-mark contacts as registered when new user signs up
 - FCM push notifications (new message to offline users + contact joined) — needs Firebase service account JSON to activate
+- Private document **download** (`GET /documents/:id/file`) — S3 `personal/` prefix, owner-scoped access, bytes streamed through the API. Upload/list/delete endpoints were intentionally removed; the table has no API writer.
 
 ## What Needs Work / Next Steps
 - Group chat endpoints

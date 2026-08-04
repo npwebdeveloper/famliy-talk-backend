@@ -43,6 +43,7 @@ export function setupSwagger(app: INestApplication): boolean {
         .addTag('Users', 'Profile, avatar, search, contacts sync, FCM token')
         .addTag('Conversations', 'Create/list conversations, mark as read')
         .addTag('Messages', 'Send/list/delete messages, read receipts')
+        .addTag('Documents', 'Private per-user file storage — upload, list, stream, delete')
         .build();
 
     const document = SwaggerModule.createDocument(app, config);

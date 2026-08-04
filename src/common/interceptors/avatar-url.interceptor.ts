@@ -33,6 +33,13 @@ export class AvatarUrlInterceptor implements NestInterceptor {
         }
 
         if (typeof value === 'object') {
+            // Binary/streaming bodies must pass through untouched — rebuilding
+            // them as plain objects below would corrupt them. Nothing here
+            // carries an avatarUrl anyway.
+            if (Buffer.isBuffer(value) || typeof (value as any).pipe === 'function') {
+                return value;
+            }
+
             // Guard against circular TypeORM relations (e.g. participant <-> conversation)
             if (seen.has(value)) return value;
             seen.add(value);

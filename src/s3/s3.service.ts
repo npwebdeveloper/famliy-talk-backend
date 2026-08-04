@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
+import { Readable } from 'stream';
 
 // SigV4 presigned URLs signed with long-lived IAM credentials cap out at 7
 // days — stay comfortably under that so a URL never expires mid-session.
@@ -80,6 +81,24 @@ export class S3Service {
             this.logger.error(`Failed to presign S3 key "${key}": ${error.message}`);
             return null;
         }
+    }
+
+    /**
+     * Read an object back as a stream. Used by the documents endpoint, which
+     * pipes the bytes straight to the client instead of handing out a
+     * presigned URL — the S3 key never leaves the server that way.
+     */
+    async getObjectStream(
+        key: string,
+    ): Promise<{ body: Readable; contentType?: string; contentLength?: number }> {
+        const response = await this.client.send(
+            new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+        );
+        return {
+            body: response.Body as Readable,
+            contentType: response.ContentType,
+            contentLength: response.ContentLength,
+        };
     }
 
     /** Unique key for a user's avatar — one folder per user, unique filename per upload. */
